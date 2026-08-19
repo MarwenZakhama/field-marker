@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Field Marker</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#12181f">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#12181f;
+    --panel:#1a222c;
+    --panel-2:#212b37;
+    --line:#2b3644;
+    --text:#e7ecf1;
+    --dim:#8a97a6;
+    --accent:#5fe3a1;
+    --accent-dim:#3a8f68;
+    --warn:#e3925f;
+    --danger:#e35f5f;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    -webkit-tap-highlight-color:transparent;}
+  body{padding:14px;padding-bottom:40px;}
+
+  .wrap{max-width:340px;margin:0 auto;}
+
+  header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;}
+  header h1{font-size:15px;font-weight:600;letter-spacing:.02em;margin:0;}
+  header .badge{font-family:var(--mono);font-size:10px;color:var(--dim);}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;}
+
+  /* deliberately small viewfinder, not fullscreen */
+  .viewfinder{position:relative;width:100%;aspect-ratio:4/3;background:#000;border-radius:7px;
+    overflow:hidden;border:1px solid var(--line);}
+  .viewfinder video{width:100%;height:100%;object-fit:cover;display:block;}
+  .viewfinder canvas{display:none;}
+  .vf-crosshair{position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;justify-content:center;}
+  .vf-crosshair svg{width:26px;height:26px;opacity:.55;}
+  .vf-status{position:absolute;left:6px;bottom:6px;font-family:var(--mono);font-size:9px;
+    background:rgba(0,0,0,.55);color:var(--accent);padding:2px 6px;border-radius:4px;}
+  .vf-off{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:var(--dim);font-size:11px;text-align:center;padding:16px;}
+
+  .row{display:flex;gap:8px;}
+  .row + .row{margin-top:8px;}
+
+  label{display:block;font-size:10px;color:var(--dim);letter-spacing:.03em;text-transform:uppercase;margin-bottom:4px;}
+  input[type=text]{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:8px 9px;font-size:14px;font-family:var(--mono);}
+  input[type=text]:focus{outline:none;border-color:var(--accent-dim);}
+
+  .field{flex:1;}
+
+  button{font:inherit;cursor:pointer;border:none;border-radius:7px;}
+  .btn{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:9px 10px;font-size:12px;}
+  .btn:active{background:#26313e;}
+  .btn-ghost{background:transparent;color:var(--dim);border:1px solid var(--line);padding:6px 9px;font-size:11px;}
+
+  .shutter-row{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:10px;}
+  .shutter{width:58px;height:58px;border-radius:50%;background:var(--accent);border:3px solid #0e140019;
+    box-shadow:0 0 0 3px var(--panel-2), 0 0 0 4px var(--line);display:flex;align-items:center;justify-content:center;}
+  .shutter:active{transform:scale(.94);}
+  .shutter:disabled{background:var(--dim);opacity:.5;}
+  .shutter svg{width:22px;height:22px;}
+
+  .gps-line{font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;justify-content:space-between;}
+  .gps-line b{color:var(--text);font-weight:500;}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;}
+  .dot.ok{background:var(--accent);}
+  .dot.wait{background:var(--warn);animation:pulse 1.2s infinite;}
+  .dot.bad{background:var(--danger);}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+  .log{max-height:220px;overflow-y:auto;}
+  .log-empty{color:var(--dim);font-size:12px;text-align:center;padding:16px 0;}
+  .log-item{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);align-items:center;}
+  .log-item:last-child{border-bottom:none;}
+  .log-thumb{width:38px;height:38px;border-radius:5px;object-fit:cover;flex-shrink:0;background:#000;}
+  .log-meta{flex:1;min-width:0;}
+  .log-ref{font-size:12px;font-weight:600;}
+  .log-coords{font-family:var(--mono);font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .log-actions{display:flex;gap:4px;}
+  .icon-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--dim);width:26px;height:26px;
+    border-radius:5px;display:flex;align-items:center;justify-content:center;}
+  .icon-btn svg{width:13px;height:13px;}
+
+  .toast{position:fixed;left:50%;bottom:18px;transform:translate(-50%,0);background:var(--panel-2);
+    border:1px solid var(--accent-dim);color:var(--accent);padding:8px 14px;border-radius:20px;font-size:12px;
+    opacity:0;pointer-events:none;transition:opacity .25s, transform .25s;z-index:50;}
+  .toast.show{opacity:1;transform:translate(-50%,-4px);}
+
+  .footer-actions{display:flex;gap:8px;margin-top:2px;}
+  .footer-actions .btn{flex:1;text-align:center;}
+
+  .toggle{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);}
+  .toggle input{accent-color:var(--accent);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Field Marker</h1>
+    <span class="badge" id="clock">--:--:--</span>
+  </header>
+
+  <div class="card">
+    <div class="viewfinder" id="vfBox">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div class="vf-crosshair">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#5fe3a1" stroke-width="1.4">
+          <circle cx="12" cy="12" r="7"/><line x1="12" y1="1" x2="12" y2="6"/>
+          <line x1="12" y1="18" x2="12" y2="23"/><line x1="1" y1="12" x2="6" y2="12"/>
+          <line x1="18" y1="12" x2="23" y2="12"/>
+        </svg>
+      </div>
+      <div class="vf-status" id="vfStatus">starting camera…</div>
+      <div class="vf-off" id="vfOff" style="display:none;"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="gps-line">
+      <span><span class="dot wait" id="gpsDot"></span>GPS</span>
+      <b id="gpsText">acquiring…</b>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div class="field">
+        <label>Reference No. (optional)</label>
+        <input type="text" id="refInput" placeholder="e.g. 014" inputmode="text">
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <label class="toggle"><input type="checkbox" id="autoInc" checked> Auto-increment after capture</label>
+    </div>
+
+    <div class="shutter-row">
+      <button class="shutter" id="shutterBtn" disabled title="Capture">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#0f1620" stroke-width="2">
+          <path d="M9 3h6l2 3h3a1 1 0 011 1v11a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1h3l2-3z"/>
+          <circle cx="12" cy="13" r="3.4"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <label style="margin:0;">Captured (<span id="logCount">0</span>)</label>
+      <div style="display:flex;gap:6px;">
+        <button class="btn-ghost" id="exportBtn">Export CSV</button>
+        <button class="btn-ghost" id="clearBtn">Clear</button>
+      </div>
+    </div>
+    <div class="log" id="log">
+      <div class="log-empty">No photos captured yet.</div>
+    </div>
+  </div>
+
+  <div class="footer-actions">
+    <button class="btn" id="downloadAllBtn">Save all photos to device</button>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="piexif.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  // ---------- state ----------
+  var STORE_KEY = "fieldmarker_log_v1";
+  var entries = [];          // {id, ref, lat, lon, acc, alt, ts, filename, blobDataUrl}
+  var stream = null;
+  var lastPosition = null;
+  var geoWatchId = null;
+
+  var video = document.getElementById("video");
+  var canvas = document.getElementById("canvas");
+  var vfStatus = document.getElementById("vfStatus");
+  var vfOff = document.getElementById("vfOff");
+  var gpsDot = document.getElementById("gpsDot");
+  var gpsText = document.getElementById("gpsText");
+  var refInput = document.getElementById("refInput");
+  var autoInc = document.getElementById("autoInc");
+  var shutterBtn = document.getElementById("shutterBtn");
+  var logEl = document.getElementById("log");
+  var logCount = document.getElementById("logCount");
+  var toast = document.getElementById("toast");
+  var clock = document.getElementById("clock");
+
+  function showToast(msg){
+    toast.textContent = msg;
+    toast.classList.add("show");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(function(){ toast.classList.remove("show"); }, 1800);
+  }
+
+  function tickClock(){
+    var d = new Date();
+    clock.textContent = d.toTimeString().slice(0,8);
+  }
+  setInterval(tickClock, 1000); tickClock();
+
+  // ---------- persistence ----------
+  function loadLog(){
+    try{
+      var raw = localStorage.getItem(STORE_KEY);
+      entries = raw ? JSON.parse(raw) : [];
+    }catch(e){ entries = []; }
+    renderLog();
+  }
+  function saveLog(){
+    try{ localStorage.setItem(STORE_KEY, JSON.stringify(entries)); }
+    catch(e){ showToast("Storage full — export & clear log"); }
+  }
+
+  // ---------- camera ----------
+  async function startCamera(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      vfStatus.textContent = "camera API unsupported";
+      vfOff.style.display = "flex";
+      vfOff.textContent = "This browser doesn't support camera access.";
+      return;
+    }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width:{ideal:1280}, height:{ideal:960} },
+        audio: false
+      });
+      video.srcObject = stream;
+      vfStatus.textContent = "live";
+      shutterBtn.disabled = false;
+    }catch(err){
+      vfStatus.textContent = "camera blocked";
+      vfOff.style.display = "flex";
+      vfOff.textContent = "Camera permission denied or unavailable. Enable camera access in browser/site settings and reload.";
+      showToast("Camera permission needed");
+    }
+  }
+
+  // ---------- geolocation ----------
+  function startGeo(){
+    if(!navigator.geolocation){
+      gpsText.textContent = "unsupported";
+      gpsDot.className = "dot bad";
+      return;
+    }
+    geoWatchId = navigator.geolocation.watchPosition(function(pos){
+      lastPosition = pos;
+      var c = pos.coords;
+      gpsDot.className = "dot ok";
+      gpsText.textContent = c.latitude.toFixed(6) + ", " + c.longitude.toFixed(6) +
+        "  ±" + Math.round(c.accuracy) + "m";
+    }, function(err){
+      gpsDot.className = "dot bad";
+      gpsText.textContent = err.code === 1 ? "permission denied" : "no fix yet";
+    }, {
+      enableHighAccuracy: true,
+      maximumAge: 2000,
+      timeout: 30000
+    });
+  }
+
+  // ---------- capture ----------
+  function nextAutoRef(){
+    var maxN = 0;
+    entries.forEach(function(e){
+      var n = parseInt(e.ref, 10);
+      if(!isNaN(n) && n > maxN) maxN = n;
+    });
+    return String(maxN + 1);
+  }
+
+  function toDMS(deg){
+    var d = Math.floor(deg);
+    var minFloat = (deg - d) * 60;
+    var m = Math.floor(minFloat);
+    var s = (minFloat - m) * 60;
+    // piexif wants [[num,den],[num,den],[num,den]]
+    return [[d,1],[m,1],[Math.round(s*100),100]];
+  }
+
+  function buildExif(lat, lon, alt, whenDate, refText){
+    var GPS = piexif.GPSIFD;
+    var gpsIfd = {};
+    gpsIfd[GPS.GPSLatitudeRef] = lat >= 0 ? "N" : "S";
+    gpsIfd[GPS.GPSLatitude] = toDMS(Math.abs(lat));
+    gpsIfd[GPS.GPSLongitudeRef] = lon >= 0 ? "E" : "W";
+    gpsIfd[GPS.GPSLongitude] = toDMS(Math.abs(lon));
+    if(typeof alt === "number" && !isNaN(alt)){
+      gpsIfd[GPS.GPSAltitudeRef] = alt < 0 ? 1 : 0;
+      gpsIfd[GPS.GPSAltitude] = [Math.round(Math.abs(alt)*100), 100];
+    }
+    var y=whenDate.getFullYear(), mo=whenDate.getMonth()+1, da=whenDate.getDate();
+    var hh=whenDate.getHours(), mi=whenDate.getMinutes(), se=whenDate.getSeconds();
+    function pad(n){ return (n<10?"0":"")+n; }
+    var dtStr = y+":"+pad(mo)+":"+pad(da)+" "+pad(hh)+":"+pad(mi)+":"+pad(se);
+
+    var zeroth = {};
+    zeroth[piexif.ImageIFD.DateTime] = dtStr;
+    if(refText){ zeroth[piexif.ImageIFD.ImageDescription] = "Ref: " + refText; }
+
+    var exif = {};
+    exif[piexif.ExifIFD.DateTimeOriginal] = dtStr;
+
+    return { "0th": zeroth, "Exif": exif, "GPS": gpsIfd, "1st": {}, "thumbnail": null };
+  }
+
+  function drawWatermark(ctx, w, h, lines){
+    var pad = Math.max(8, w*0.02);
+    ctx.font = Math.max(13, Math.round(w*0.028)) + "px monospace";
+    var lineH = Math.max(16, Math.round(w*0.034));
+    var boxH = lines.length * lineH + pad*1.4;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(0, h - boxH, w, boxH);
+    ctx.fillStyle = "#5fe3a1";
+    lines.forEach(function(line, i){
+      ctx.fillText(line, pad, h - boxH + pad + (i+0.8)*lineH);
+    });
+  }
+
+  async function capture(){
+    if(!video.videoWidth){ showToast("Camera not ready"); return; }
+    shutterBtn.disabled = true;
+
+    var w = video.videoWidth, h = video.videoHeight;
+    canvas.width = w; canvas.height = h;
+    var ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, w, h);
+
+    var when = new Date();
+    var ref = refInput.value.trim();
+    var lat = null, lon = null, acc = null, alt = null;
+    if(lastPosition){
+      lat = lastPosition.coords.latitude;
+      lon = lastPosition.coords.longitude;
+      acc = lastPosition.coords.accuracy;
+      alt = lastPosition.coords.altitude;
+    }
+
+    var coordStr = (lat!=null) ? (lat.toFixed(6)+", "+lon.toFixed(6)+" ±"+Math.round(acc)+"m") : "NO GPS FIX";
+    var lines = [];
+    if(ref) lines.push("REF " + ref);
+    lines.push(coordStr);
+    lines.push(when.toISOString().replace("T"," ").slice(0,19)+"Z");
+    drawWatermark(ctx, w, h, lines);
+
+    var dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+    if(lat != null){
+      try{
+        var exifObj = buildExif(lat, lon, alt, when, ref);
+        var exifBytes = piexif.dump(exifObj);
+        dataUrl = piexif.insert(exifBytes, dataUrl);
+      }catch(e){ /* watermark still present even if EXIF write fails */ }
+    }
+
+    var id = "p" + Date.now();
+    var filename = "fieldmarker_" + (ref ? ref.replace(/[^a-z0-9_-]/gi,"") + "_" : "") +
+      when.toISOString().replace(/[:.]/g,"-") + ".jpg";
+
+    entries.unshift({
+      id: id, ref: ref, lat: lat, lon: lon, acc: acc, alt: alt,
+      ts: when.toISOString(), filename: filename, dataUrl: dataUrl
+    });
+    saveLog();
+    renderLog();
+    showToast(lat!=null ? "Saved — GPS locked" : "Saved — no GPS fix");
+
+    if(autoInc.checked){
+      refInput.value = nextAutoRef();
+    }
+
+    setTimeout(function(){ shutterBtn.disabled = false; }, 350);
+  }
+
+  // ---------- log rendering ----------
+  function renderLog(){
+    logCount.textContent = entries.length;
+    if(!entries.length){
+      logEl.innerHTML = '<div class="log-empty">No photos captured yet.</div>';
+      return;
+    }
+    logEl.innerHTML = "";
+    entries.forEach(function(e){
+      var row = document.createElement("div");
+      row.className = "log-item";
+
+      var img = document.createElement("img");
+      img.className = "log-thumb";
+      img.src = e.dataUrl;
+      row.appendChild(img);
+
+      var meta = document.createElement("div");
+      meta.className = "log-meta";
+      var refDiv = document.createElement("div");
+      refDiv.className = "log-ref";
+      refDiv.textContent = e.ref ? ("Ref " + e.ref) : "(no ref)";
+      var coordDiv = document.createElement("div");
+      coordDiv.className = "log-coords";
+      coordDiv.textContent = e.lat!=null ? (e.lat.toFixed(5)+", "+e.lon.toFixed(5)) : "no GPS fix";
+      meta.appendChild(refDiv); meta.appendChild(coordDiv);
+      row.appendChild(meta);
+
+      var actions = document.createElement("div");
+      actions.className = "log-actions";
+
+      var dl = document.createElement("a");
+      dl.className = "icon-btn"; dl.href = e.dataUrl; dl.download = e.filename;
+      dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>';
+      actions.appendChild(dl);
+
+      var del = document.createElement("button");
+      del.className = "icon-btn"; del.title = "Delete";
+      del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2m-1 0v14a1 1 0 01-1 1H9a1 1 0 01-1-1V6"/></svg>';
+      del.onclick = function(){
+        entries = entries.filter(function(x){ return x.id !== e.id; });
+        saveLog(); renderLog();
+      };
+      actions.appendChild(del);
+
+      row.appendChild(actions);
+      logEl.appendChild(row);
+    });
+  }
+
+  function csvEscape(s){
+    s = String(s == null ? "" : s);
+    if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+    return s;
+  }
+
+  function exportCsv(){
+    if(!entries.length){ showToast("Nothing to export"); return; }
+    var rows = [["reference","latitude","longitude","accuracy_m","altitude_m","timestamp_utc","filename"]];
+    entries.slice().reverse().forEach(function(e){
+      rows.push([e.ref, e.lat!=null?e.lat:"", e.lon!=null?e.lon:"", e.acc!=null?Math.round(e.acc):"",
+        e.alt!=null?Math.round(e.alt):"", e.ts, e.filename]);
+    });
+    var csv = rows.map(function(r){ return r.map(csvEscape).join(","); }).join("\n");
+    var blob = new Blob([csv], {type:"text/csv"});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = "fieldmarker_log_" + Date.now() + ".csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  }
+
+  function downloadAll(){
+    if(!entries.length){ showToast("Nothing to save"); return; }
+    entries.slice().reverse().forEach(function(e, i){
+      setTimeout(function(){
+        var a = document.createElement("a");
+        a.href = e.dataUrl; a.download = e.filename;
+        document.body.appendChild(a); a.click(); a.remove();
+      }, i * 300);
+    });
+    showToast("Saving " + entries.length + " photo(s)…");
+  }
+
+  function clearLog(){
+    if(!entries.length) return;
+    if(confirm("Delete all " + entries.length + " logged photos? This can't be undone.")){
+      entries = []; saveLog(); renderLog();
+    }
+  }
+
+  // ---------- wire up ----------
+  shutterBtn.addEventListener("click", capture);
+  document.getElementById("exportBtn").addEventListener("click", exportCsv);
+  document.getElementById("downloadAllBtn").addEventListener("click", downloadAll);
+  document.getElementById("clearBtn").addEventListener("click", clearLog);
+
+  loadLog();
+  startCamera();
+  startGeo();
+
+  if(refInput.value === "" && entries.length){
+    // leave blank by default; user can tap auto-increment logic manually via capture
+  }
+
+  if("serviceWorker" in navigator){
+    window.addEventListener("load", function(){
+      navigator.serviceWorker.register("sw.js").catch(function(){});
+    });
+  }
+})();
+</script>
+</body>
+</html>
