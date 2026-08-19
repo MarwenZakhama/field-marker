@@ -1,4 +1,4 @@
-var CACHE = "fieldmarker-v8";
+var CACHE = "fieldmarker-v10";
 var ASSETS = [
   "./",
   "./index.html",
