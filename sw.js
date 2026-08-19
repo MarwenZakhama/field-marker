@@ -1,9 +1,10 @@
-var CACHE = "fieldmarker-v1";
+var CACHE = "fieldmarker-v3";
 var ASSETS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./piexif.js",
+  "./jszip.min.js",
   "./icon-192.png",
   "./icon-512.png"
 ];

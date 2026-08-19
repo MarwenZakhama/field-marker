@@ -132,6 +132,9 @@
       <span><span class="dot wait" id="gpsDot"></span>GPS</span>
       <b id="gpsText">acquiring…</b>
     </div>
+    <div class="row" style="margin-top:6px;">
+      <button class="btn-ghost" id="retryGpsBtn" style="flex:1;">Retry GPS lock</button>
+    </div>
   </div>
 
   <div class="card">
@@ -169,7 +172,7 @@
   </div>
 
   <div class="footer-actions">
-    <button class="btn" id="downloadAllBtn">Save all photos to device</button>
+    <button class="btn" id="downloadAllBtn">Save all photos as .zip</button>
   </div>
 
 </div>
@@ -177,6 +180,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="piexif.js"></script>
+<script src="jszip.min.js"></script>
 <script>
 (function(){
   "use strict";
@@ -187,6 +191,7 @@
   var stream = null;
   var lastPosition = null;
   var geoWatchId = null;
+  var videoReady = false;
 
   var video = document.getElementById("video");
   var canvas = document.getElementById("canvas");
@@ -242,8 +247,19 @@
         audio: false
       });
       video.srcObject = stream;
+      // Some mobile browsers (especially iOS Safari, and PWAs resuming from
+      // background) need an explicit play() call — autoplay alone can leave
+      // the element attached but not actually decoding frames, which is the
+      // main cause of "photo comes out solid black".
+      try{ await video.play(); }catch(e){ /* will retry on canplay below */ }
+
+      videoReady = false;
+      video.addEventListener("loadeddata", markVideoReady);
+      video.addEventListener("canplay", markVideoReady);
+      // Fallback in case events already fired before listeners attached
+      if(video.readyState >= 2) markVideoReady();
+
       vfStatus.textContent = "live";
-      shutterBtn.disabled = false;
     }catch(err){
       vfStatus.textContent = "camera blocked";
       vfOff.style.display = "flex";
@@ -252,13 +268,37 @@
     }
   }
 
+  function markVideoReady(){
+    if(videoReady) return;
+    videoReady = true;
+    shutterBtn.disabled = false;
+  }
+
+  // Resume the camera feed if the page was backgrounded (common on mobile —
+  // browsers pause the video element and it can come back showing a stale
+  // black frame until play() is called again).
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState === "visible" && stream && video.paused){
+      video.play().catch(function(){});
+    }
+  });
+
   // ---------- geolocation ----------
   function startGeo(){
+    if(!window.isSecureContext){
+      gpsDot.className = "dot bad";
+      gpsText.textContent = "needs https";
+      showToast("Open via your https:// URL, not a local file, for GPS to work");
+      return;
+    }
     if(!navigator.geolocation){
       gpsText.textContent = "unsupported";
       gpsDot.className = "dot bad";
       return;
     }
+    gpsDot.className = "dot wait";
+    gpsText.textContent = "acquiring…";
+    if(geoWatchId != null){ navigator.geolocation.clearWatch(geoWatchId); }
     geoWatchId = navigator.geolocation.watchPosition(function(pos){
       lastPosition = pos;
       var c = pos.coords;
@@ -267,7 +307,14 @@
         "  ±" + Math.round(c.accuracy) + "m";
     }, function(err){
       gpsDot.className = "dot bad";
-      gpsText.textContent = err.code === 1 ? "permission denied" : "no fix yet";
+      if(err.code === 1){
+        gpsText.textContent = "permission denied";
+        showToast("Check phone Location is ON, and site location permission is Allow");
+      }else if(err.code === 2){
+        gpsText.textContent = "position unavailable";
+      }else{
+        gpsText.textContent = "no fix yet — retrying";
+      }
     }, {
       enableHighAccuracy: true,
       maximumAge: 2000,
@@ -333,14 +380,47 @@
     });
   }
 
+  // Draws the current video frame and reports whether the result looks like
+  // real image data (vs. a stale/black frame, which happens if the video
+  // element was paused or hadn't actually started decoding yet).
+  function drawFrameAndCheck(ctx, w, h){
+    ctx.drawImage(video, 0, 0, w, h);
+    var sample = ctx.getImageData(0, 0, w, h);
+    var d = sample.data, sum = 0, step = 4 * 97; // sparse sample for speed
+    var count = 0;
+    for(var i = 0; i < d.length; i += step){
+      sum += d[i] + d[i+1] + d[i+2];
+      count++;
+    }
+    return (sum / count) > 3; // near-zero average means an all-black frame
+  }
+
   async function capture(){
-    if(!video.videoWidth){ showToast("Camera not ready"); return; }
+    if(!video.videoWidth || !videoReady){ showToast("Camera not ready — wait a moment"); return; }
     shutterBtn.disabled = true;
+
+    if(video.paused){
+      try{ await video.play(); }catch(e){}
+    }
 
     var w = video.videoWidth, h = video.videoHeight;
     canvas.width = w; canvas.height = h;
-    var ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, w, h);
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+    var ok = drawFrameAndCheck(ctx, w, h);
+    if(!ok){
+      // Retry a couple of times with short waits — covers the case where the
+      // decoder hadn't produced a real frame yet on the first attempt.
+      for(var attempt = 0; attempt < 3 && !ok; attempt++){
+        await new Promise(function(r){ setTimeout(r, 200); });
+        ok = drawFrameAndCheck(ctx, w, h);
+      }
+    }
+    if(!ok){
+      showToast("Frame looked blank — try again");
+      shutterBtn.disabled = false;
+      return;
+    }
 
     var when = new Date();
     var ref = refInput.value.trim();
@@ -462,14 +542,38 @@
 
   function downloadAll(){
     if(!entries.length){ showToast("Nothing to save"); return; }
-    entries.slice().reverse().forEach(function(e, i){
-      setTimeout(function(){
-        var a = document.createElement("a");
-        a.href = e.dataUrl; a.download = e.filename;
-        document.body.appendChild(a); a.click(); a.remove();
-      }, i * 300);
+    // Mobile browsers block multiple automatic downloads triggered one after
+    // another — only the first would go through. Bundling into a single ZIP
+    // sidesteps that entirely, since it's just one download.
+    if(typeof JSZip === "undefined"){
+      showToast("Zip library failed to load — reload the app");
+      return;
+    }
+    var btn = document.getElementById("downloadAllBtn");
+    var originalText = btn.textContent;
+    btn.textContent = "Zipping " + entries.length + " photo(s)…";
+    btn.disabled = true;
+
+    var zip = new JSZip();
+    entries.slice().reverse().forEach(function(e){
+      var base64 = e.dataUrl.split(",")[1];
+      zip.file(e.filename, base64, { base64: true });
     });
-    showToast("Saving " + entries.length + " photo(s)…");
+
+    zip.generateAsync({ type: "blob" }).then(function(blob){
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "fieldmarker_photos_" + Date.now() + ".zip";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+      showToast("Saved " + entries.length + " photo(s) as a zip");
+    }).catch(function(){
+      showToast("Zip failed — try again");
+    }).finally(function(){
+      btn.textContent = originalText;
+      btn.disabled = false;
+    });
   }
 
   function clearLog(){
@@ -481,6 +585,7 @@
 
   // ---------- wire up ----------
   shutterBtn.addEventListener("click", capture);
+  document.getElementById("retryGpsBtn").addEventListener("click", startGeo);
   document.getElementById("exportBtn").addEventListener("click", exportCsv);
   document.getElementById("downloadAllBtn").addEventListener("click", downloadAll);
   document.getElementById("clearBtn").addEventListener("click", clearLog);
