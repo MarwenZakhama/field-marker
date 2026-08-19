@@ -30,9 +30,38 @@
 
   .wrap{max-width:340px;margin:0 auto;}
 
-  header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
   header h1{font-size:15px;font-weight:600;letter-spacing:.02em;margin:0;}
   header .badge{font-family:var(--mono);font-size:10px;color:var(--dim);}
+  .header-right{display:flex;align-items:center;gap:8px;}
+
+  /* numbers/coords/timestamps must never visually reorder, regardless of
+     page text direction — isolate them as their own LTR run */
+  .ltr-num{direction:ltr;unicode-bidi:isolate;}
+
+  /* ---- language switcher: closed pill + drop-down list, tap to pick ---- */
+  .lang-switch{position:relative;}
+  .lang-current{display:flex;align-items:center;gap:3px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--text);font-family:var(--mono);font-size:10px;
+    font-weight:600;letter-spacing:.03em;padding:5px 7px;border-radius:7px;}
+  .lang-current:active{background:#26313e;}
+  .lang-current svg{width:10px;height:10px;transition:transform .15s;}
+  .lang-switch.open .lang-current svg{transform:rotate(180deg);}
+  .lang-switch.open .lang-current{border-color:var(--accent-dim);}
+  .lang-menu{position:absolute;top:calc(100% + 4px);inset-inline-end:0;min-width:56px;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:9px;overflow:hidden;
+    box-shadow:0 8px 20px rgba(0,0,0,.35);z-index:40;display:none;flex-direction:column;}
+  .lang-switch.open .lang-menu{display:flex;}
+  .lang-opt{width:100%;background:var(--panel);color:var(--text);font-family:var(--mono);
+    font-size:12px;font-weight:600;padding:9px 0;text-align:center;border-bottom:1px solid var(--line);}
+  .lang-opt:last-child{border-bottom:none;}
+  .lang-opt:active{background:#26313e;}
+  .lang-opt.active{background:var(--accent);color:#0f1620;}
+
+  html[dir="rtl"] .vf-status{left:auto;right:6px;}
+  html[dir="rtl"] .lightbox .lb-close{right:auto;left:16px;}
+  html[dir="rtl"] .dot{margin-right:0;margin-left:5px;}
+  html[dir="rtl"] input[type=text]{direction:ltr;text-align:right;}
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px;}
 
@@ -118,8 +147,20 @@
 <div class="wrap">
 
   <header>
-    <h1>Field Marker</h1>
-    <span class="badge" id="clock">--:--:--</span>
+    <h1 id="appTitle">Field Marker</h1>
+    <div class="header-right">
+      <span class="badge ltr-num" id="clock">--:--:--</span>
+      <div class="lang-switch" id="langSwitch">
+        <button class="lang-current" id="langCurrentBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span id="langCurrentLabel">EN</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="lang-menu" id="langMenu" role="listbox">
+          <button class="lang-opt active" type="button" data-lang="en" role="option" aria-selected="true">EN</button>
+          <button class="lang-opt" type="button" data-lang="ar" role="option" aria-selected="false">ع</button>
+        </div>
+      </div>
+    </div>
   </header>
 
   <div class="card">
@@ -140,8 +181,8 @@
 
   <div class="card">
     <div class="gps-line">
-      <span><span class="dot wait" id="gpsDot"></span>GPS</span>
-      <b id="gpsText">acquiring…</b>
+      <span><span class="dot wait" id="gpsDot"></span><span id="gpsLabel">GPS</span></span>
+      <b id="gpsText" class="ltr-num">acquiring…</b>
     </div>
     <div class="row" style="margin-top:6px;">
       <button class="btn-ghost" id="retryGpsBtn" style="flex:1;">Retry GPS lock</button>
@@ -151,12 +192,12 @@
   <div class="card">
     <div class="row">
       <div class="field">
-        <label>Reference No. (optional)</label>
+        <label id="refLabel">Reference No. (optional)</label>
         <input type="text" id="refInput" placeholder="e.g. 014" inputmode="text">
       </div>
     </div>
     <div class="row" style="margin-top:8px;">
-      <label class="toggle"><input type="checkbox" id="autoInc" checked> Auto-increment after capture</label>
+      <label class="toggle"><input type="checkbox" id="autoInc" checked> <span id="autoIncLabel">Auto-increment after capture</span></label>
     </div>
 
     <div class="shutter-row">
@@ -171,14 +212,14 @@
 
   <div class="card">
     <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
-      <label style="margin:0;">Captured (<span id="logCount">0</span>)</label>
+      <label style="margin:0;"><span id="capturedLabel">Captured</span> (<span id="logCount" class="ltr-num">0</span>)</label>
       <div style="display:flex;gap:6px;">
         <button class="btn-ghost" id="exportBtn">Export CSV</button>
         <button class="btn-ghost" id="clearBtn">Clear</button>
       </div>
     </div>
     <div class="log" id="log">
-      <div class="log-empty">No photos captured yet.</div>
+      <div class="log-empty" id="logEmptyMsg">No photos captured yet.</div>
     </div>
   </div>
 
@@ -225,6 +266,242 @@
   var logCount = document.getElementById("logCount");
   var toast = document.getElementById("toast");
   var clock = document.getElementById("clock");
+
+  // ---------- i18n ----------
+  // Only interface copy is translated. Numbers, coordinates and timestamps
+  // are always rendered as plain Western digits, in their normal left-to-
+  // right order — they're wrapped in .ltr-num (or drawn as isolated runs on
+  // the canvas) so they never get caught up in the Arabic right-to-left
+  // reordering and come out mirrored/rearranged.
+  var LANG_KEY = "fieldmarker_lang_v1";
+  var STR = {
+    en: {
+      appTitle: "Field Marker",
+      gpsLabel: "GPS",
+      retryGps: "Retry GPS lock",
+      refLabel: "Reference No. (optional)",
+      refPlaceholder: "e.g. 014",
+      autoIncLabel: "Auto-increment after capture",
+      capturedLabel: "Captured",
+      exportBtn: "Export CSV",
+      clearBtn: "Clear",
+      logEmpty: "No photos captured yet.",
+      downloadAllBtn: "Save all photos as .zip",
+      shutterTitle: "Capture",
+      lbCloseTitle: "Close",
+      vfStarting: "starting camera…",
+      vfLive: "live",
+      vfUnsupported: "camera API unsupported",
+      vfBlocked: "camera blocked",
+      vfOffUnsupportedMsg: "This browser doesn't support camera access.",
+      vfOffBlockedMsg: "Camera permission denied or unavailable. Enable camera access in browser/site settings and reload.",
+      gpsAcquiring: "acquiring…",
+      gpsNeedsHttps: "needs https",
+      gpsUnsupported: "unsupported",
+      gpsDenied: "permission denied",
+      gpsUnavailable: "position unavailable",
+      gpsRetrying: "no fix yet — retrying",
+      toastHttps: "Open via your https:// URL, not a local file, for GPS to work",
+      toastLocation: "Check phone Location is ON, and site location permission is Allow",
+      toastCameraPerm: "Camera permission needed",
+      toastCamNotReady: "Camera not ready — wait a moment",
+      toastFrameBlank: "Frame looked blank — try again",
+      toastSavedGps: "Saved — GPS locked",
+      toastSavedNoGps: "Saved — no GPS fix",
+      toastNothingExport: "Nothing to export",
+      toastNothingSave: "Nothing to save",
+      toastZipLibFail: "Zip library failed to load — reload the app",
+      toastZipping: function(n){ return "Zipping " + n + " photo(s)…"; },
+      toastZipSaved: function(n){ return "Saved " + n + " photo(s) as a zip"; },
+      toastZipFailed: "Zip failed — try again",
+      toastStorageOpenFail: "Couldn't open storage — photos won't be saved this session",
+      toastStorageFull: "Storage full — export & clear log",
+      toastStorageSaveFail: "Couldn't save — export your photos soon",
+      refPrefix: "Ref",
+      noRef: "(no ref)",
+      noGpsFix: "no GPS fix",
+      thisPhoto: "this photo",
+      photoRef: function(ref){ return "photo Ref " + ref; },
+      deleteConfirmPhoto: function(label){ return "Delete " + label + "? This can't be undone."; },
+      deleteConfirmAll: function(n){ return "Delete all " + n + " logged photos? This can't be undone."; },
+      viewTitle: "View photo",
+      deleteTitle: "Delete",
+      watermarkRef: "REF",
+      watermarkNoGps: "NO GPS FIX"
+    },
+    ar: {
+      appTitle: "علامة الحقل",
+      gpsLabel: "GPS",
+      retryGps: "إعادة محاولة تثبيت GPS",
+      refLabel: "الرقم المرجعي (اختياري)",
+      refPlaceholder: "مثال: 014",
+      autoIncLabel: "زيادة الرقم تلقائيًا بعد كل صورة",
+      capturedLabel: "الصور الملتقطة",
+      exportBtn: "تصدير CSV",
+      clearBtn: "مسح",
+      logEmpty: "لم يتم التقاط أي صور بعد.",
+      downloadAllBtn: "حفظ جميع الصور كملف ‎.zip",
+      shutterTitle: "التقاط",
+      lbCloseTitle: "إغلاق",
+      vfStarting: "جارٍ تشغيل الكاميرا…",
+      vfLive: "مباشر",
+      vfUnsupported: "الكاميرا غير مدعومة",
+      vfBlocked: "الكاميرا محظورة",
+      vfOffUnsupportedMsg: "هذا المتصفح لا يدعم الوصول إلى الكاميرا.",
+      vfOffBlockedMsg: "تم رفض إذن الكاميرا أو أنه غير متاح. فعّل الوصول إلى الكاميرا من إعدادات المتصفح أو الموقع ثم أعد التحميل.",
+      gpsAcquiring: "جارٍ التحديد…",
+      gpsNeedsHttps: "يتطلب https",
+      gpsUnsupported: "غير مدعوم",
+      gpsDenied: "تم رفض الإذن",
+      gpsUnavailable: "الموقع غير متاح",
+      gpsRetrying: "لا يوجد تثبيت بعد — إعادة المحاولة",
+      toastHttps: "افتح التطبيق عبر رابط https:// وليس كملف محلي حتى يعمل GPS",
+      toastLocation: "تأكد أن خدمة الموقع في الهاتف مفعّلة وأن إذن الموقع للموقع مضبوط على السماح",
+      toastCameraPerm: "إذن الكاميرا مطلوب",
+      toastCamNotReady: "الكاميرا غير جاهزة — انتظر لحظة",
+      toastFrameBlank: "الإطار يبدو فارغًا — حاول مرة أخرى",
+      toastSavedGps: "تم الحفظ — تم تثبيت GPS",
+      toastSavedNoGps: "تم الحفظ — بدون إشارة GPS",
+      toastNothingExport: "لا يوجد شيء للتصدير",
+      toastNothingSave: "لا يوجد شيء للحفظ",
+      toastZipLibFail: "فشل تحميل مكتبة الضغط — أعد تحميل التطبيق",
+      toastZipping: function(n){ return "جارٍ ضغط " + n + " صورة…"; },
+      toastZipSaved: function(n){ return "تم حفظ " + n + " صورة كملف مضغوط"; },
+      toastZipFailed: "فشل الضغط — حاول مرة أخرى",
+      toastStorageOpenFail: "تعذّر فتح مساحة التخزين — لن يتم حفظ الصور في هذه الجلسة",
+      toastStorageFull: "التخزين ممتلئ — صدّر السجل ثم امسحه",
+      toastStorageSaveFail: "تعذّر الحفظ — صدّر صورك قريبًا",
+      refPrefix: "مرجع",
+      noRef: "(بدون مرجع)",
+      noGpsFix: "بدون إشارة GPS",
+      thisPhoto: "هذه الصورة",
+      photoRef: function(ref){ return "الصورة ذات المرجع " + ref; },
+      deleteConfirmPhoto: function(label){ return "حذف " + label + "؟ لا يمكن التراجع عن هذا."; },
+      deleteConfirmAll: function(n){ return "حذف جميع الصور المسجّلة (" + n + ")؟ لا يمكن التراجع عن هذا."; },
+      viewTitle: "عرض الصورة",
+      deleteTitle: "حذف",
+      watermarkRef: "مرجع",
+      watermarkNoGps: "بدون GPS"
+    }
+  };
+  var LANG = "en";
+  try{
+    var savedLang = localStorage.getItem(LANG_KEY);
+    if(savedLang === "en" || savedLang === "ar") LANG = savedLang;
+  }catch(e){}
+
+  function t(key){
+    return STR[LANG][key];
+  }
+
+  // Wraps a numeric/coordinate/timestamp substring in Unicode isolate marks
+  // so it always renders left-to-right and in its original order, even when
+  // it sits inside an Arabic (right-to-left) sentence or a plain native
+  // dialog like confirm(). This is what stops numbers from getting visually
+  // reordered/mirrored in RTL mode.
+  function ltr(s){ return "\u2066" + s + "\u2069"; }
+
+  // Tracks live status so screens can be re-rendered in the new language
+  // immediately after a language switch, without waiting for the next
+  // camera/GPS event.
+  var cameraState = "starting";   // starting | live | unsupported | blocked
+  var gpsState = { kind: "wait" }; // wait | https | unsupported | ok | denied | unavailable | retrying
+
+  function renderCameraUI(){
+    if(cameraState === "starting") vfStatus.textContent = t("vfStarting");
+    else if(cameraState === "live") vfStatus.textContent = t("vfLive");
+    else if(cameraState === "unsupported"){
+      vfStatus.textContent = t("vfUnsupported");
+      vfOff.style.display = "flex";
+      vfOff.textContent = t("vfOffUnsupportedMsg");
+    }else if(cameraState === "blocked"){
+      vfStatus.textContent = t("vfBlocked");
+      vfOff.style.display = "flex";
+      vfOff.textContent = t("vfOffBlockedMsg");
+    }
+  }
+
+  function renderGpsUI(){
+    if(gpsState.kind === "wait"){
+      gpsDot.className = "dot wait"; gpsText.textContent = t("gpsAcquiring");
+    }else if(gpsState.kind === "https"){
+      gpsDot.className = "dot bad"; gpsText.textContent = t("gpsNeedsHttps");
+    }else if(gpsState.kind === "unsupported"){
+      gpsDot.className = "dot bad"; gpsText.textContent = t("gpsUnsupported");
+    }else if(gpsState.kind === "ok"){
+      gpsDot.className = "dot ok";
+      gpsText.textContent = gpsState.lat.toFixed(6) + ", " + gpsState.lon.toFixed(6) + "  ±" + Math.round(gpsState.acc) + "m";
+    }else if(gpsState.kind === "denied"){
+      gpsDot.className = "dot bad"; gpsText.textContent = t("gpsDenied");
+    }else if(gpsState.kind === "unavailable"){
+      gpsDot.className = "dot bad"; gpsText.textContent = t("gpsUnavailable");
+    }else if(gpsState.kind === "retrying"){
+      gpsDot.className = "dot bad"; gpsText.textContent = t("gpsRetrying");
+    }
+  }
+
+  function applyStaticStrings(){
+    document.getElementById("appTitle").textContent = t("appTitle");
+    document.getElementById("gpsLabel").textContent = t("gpsLabel");
+    document.getElementById("retryGpsBtn").textContent = t("retryGps");
+    document.getElementById("refLabel").textContent = t("refLabel");
+    refInput.placeholder = t("refPlaceholder");
+    document.getElementById("autoIncLabel").textContent = t("autoIncLabel");
+    document.getElementById("capturedLabel").textContent = t("capturedLabel");
+    document.getElementById("exportBtn").textContent = t("exportBtn");
+    document.getElementById("clearBtn").textContent = t("clearBtn");
+    var emptyMsg = document.getElementById("logEmptyMsg");
+    if(emptyMsg) emptyMsg.textContent = t("logEmpty");
+    document.getElementById("downloadAllBtn").textContent = t("downloadAllBtn");
+    shutterBtn.title = t("shutterTitle");
+    document.getElementById("lbClose").title = t("lbCloseTitle");
+    document.documentElement.lang = LANG;
+    document.documentElement.dir = LANG === "ar" ? "rtl" : "ltr";
+    document.getElementById("langCurrentLabel").textContent = LANG === "ar" ? "ع" : "EN";
+    var opts = document.querySelectorAll("#langMenu .lang-opt");
+    opts.forEach(function(o){
+      var active = o.getAttribute("data-lang") === LANG;
+      o.classList.toggle("active", active);
+      o.setAttribute("aria-selected", active ? "true" : "false");
+    });
+  }
+
+  function setLang(lang){
+    if(lang !== "en" && lang !== "ar") return;
+    LANG = lang;
+    try{ localStorage.setItem(LANG_KEY, LANG); }catch(e){}
+    applyStaticStrings();
+    renderCameraUI();
+    renderGpsUI();
+    renderLog();
+  }
+
+  applyStaticStrings();
+  renderCameraUI();
+  renderGpsUI();
+
+  // ---------- language switch UI ----------
+  var langSwitchEl = document.getElementById("langSwitch");
+  var langCurrentBtn = document.getElementById("langCurrentBtn");
+  var langMenu = document.getElementById("langMenu");
+  function closeLangMenu(){
+    langSwitchEl.classList.remove("open");
+    langCurrentBtn.setAttribute("aria-expanded", "false");
+  }
+  langCurrentBtn.addEventListener("click", function(ev){
+    ev.stopPropagation();
+    var open = langSwitchEl.classList.toggle("open");
+    langCurrentBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  langMenu.addEventListener("click", function(ev){
+    var opt = ev.target.closest(".lang-opt");
+    if(!opt) return;
+    setLang(opt.getAttribute("data-lang"));
+    closeLangMenu();
+  });
+  document.addEventListener("click", function(ev){
+    if(!langSwitchEl.contains(ev.target)) closeLangMenu();
+  });
 
   function showToast(msg){
     toast.textContent = msg;
@@ -319,17 +596,17 @@
     }).catch(function(){
       entries = [];
       renderLog();
-      showToast("Couldn't open storage — photos won't be saved this session");
+      showToast(t("toastStorageOpenFail"));
     });
   }
   function saveLog(){
     if(!hasIDB){
       try{ localStorage.setItem(STORE_KEY, JSON.stringify(entries)); }
-      catch(e){ showToast("Storage full — export & clear log"); }
+      catch(e){ showToast(t("toastStorageFull")); }
       return;
     }
     idbSet(STORE_KEY, entries).catch(function(){
-      showToast("Couldn't save — export your photos soon");
+      showToast(t("toastStorageSaveFail"));
     });
   }
 
@@ -338,9 +615,8 @@
 
   async function startCamera(){
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-      vfStatus.textContent = "camera API unsupported";
-      vfOff.style.display = "flex";
-      vfOff.textContent = "This browser doesn't support camera access.";
+      cameraState = "unsupported";
+      renderCameraUI();
       return;
     }
     try{
@@ -375,13 +651,13 @@
       // Fallback in case events already fired before listeners attached
       if(video.readyState >= 2) markVideoReady();
 
-      vfStatus.textContent = "live";
+      cameraState = "live";
+      renderCameraUI();
 
     }catch(err){
-      vfStatus.textContent = "camera blocked";
-      vfOff.style.display = "flex";
-      vfOff.textContent = "Camera permission denied or unavailable. Enable camera access in browser/site settings and reload.";
-      showToast("Camera permission needed");
+      cameraState = "blocked";
+      renderCameraUI();
+      showToast(t("toastCameraPerm"));
     }
   }
 
@@ -411,35 +687,34 @@
   // ---------- geolocation ----------
   function startGeo(){
     if(!window.isSecureContext){
-      gpsDot.className = "dot bad";
-      gpsText.textContent = "needs https";
-      showToast("Open via your https:// URL, not a local file, for GPS to work");
+      gpsState = { kind: "https" };
+      renderGpsUI();
+      showToast(t("toastHttps"));
       return;
     }
     if(!navigator.geolocation){
-      gpsText.textContent = "unsupported";
-      gpsDot.className = "dot bad";
+      gpsState = { kind: "unsupported" };
+      renderGpsUI();
       return;
     }
-    gpsDot.className = "dot wait";
-    gpsText.textContent = "acquiring…";
+    gpsState = { kind: "wait" };
+    renderGpsUI();
     if(geoWatchId != null){ navigator.geolocation.clearWatch(geoWatchId); }
     geoWatchId = navigator.geolocation.watchPosition(function(pos){
       lastPosition = pos;
       var c = pos.coords;
-      gpsDot.className = "dot ok";
-      gpsText.textContent = c.latitude.toFixed(6) + ", " + c.longitude.toFixed(6) +
-        "  ±" + Math.round(c.accuracy) + "m";
+      gpsState = { kind: "ok", lat: c.latitude, lon: c.longitude, acc: c.accuracy };
+      renderGpsUI();
     }, function(err){
-      gpsDot.className = "dot bad";
       if(err.code === 1){
-        gpsText.textContent = "permission denied";
-        showToast("Check phone Location is ON, and site location permission is Allow");
+        gpsState = { kind: "denied" };
+        showToast(t("toastLocation"));
       }else if(err.code === 2){
-        gpsText.textContent = "position unavailable";
+        gpsState = { kind: "unavailable" };
       }else{
-        gpsText.textContent = "no fix yet — retrying";
+        gpsState = { kind: "retrying" };
       }
+      renderGpsUI();
     }, {
       enableHighAccuracy: true,
       maximumAge: 2000,
@@ -517,17 +792,50 @@
     return { "0th": zeroth, "Exif": exif, "GPS": gpsIfd, "1st": {}, "thumbnail": null };
   }
 
+  // lines: each entry is either a plain string (pure numeric/GPS/timestamp
+  // content — always drawn as a single left-to-right run) or an
+  // {label, value} pair (a translated word plus a number). For the
+  // {label, value} form the label and the number are drawn as two
+  // separate fillText calls, positioned by hand, instead of being joined
+  // into one string and left to the canvas's own bidi handling — that
+  // guarantees the digits in `value` are never reshuffled or mirrored by
+  // right-to-left text around them, in Arabic or any future language.
   function drawWatermark(ctx, w, h, lines){
     var pad = Math.max(8, w*0.02);
-    ctx.font = Math.max(13, Math.round(w*0.028)) + "px monospace";
+    var fontSize = Math.max(13, Math.round(w*0.028));
+    ctx.font = fontSize + "px monospace";
     var lineH = Math.max(16, Math.round(w*0.034));
     var boxH = lines.length * lineH + pad*1.4;
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillRect(0, h - boxH, w, boxH);
     ctx.fillStyle = "#5fe3a1";
+    var rtl = (LANG === "ar");
+    var gap = fontSize * 0.3;
+
     lines.forEach(function(line, i){
-      ctx.fillText(line, pad, h - boxH + pad + (i+0.8)*lineH);
+      var y = h - boxH + pad + (i+0.8)*lineH;
+      if(typeof line === "string"){
+        // Plain numeric/GPS/timestamp content — no script mixing, so a
+        // single run is always safe. Only the anchor side changes with
+        // language, to sit flush with the rest of the box's text.
+        ctx.textAlign = rtl ? "right" : "left";
+        ctx.fillText(line, rtl ? (w - pad) : pad, y);
+        return;
+      }
+      if(rtl){
+        ctx.textAlign = "right";
+        var x = w - pad;
+        ctx.fillText(line.label, x, y);
+        x -= ctx.measureText(line.label).width + gap;
+        ctx.fillText(":", x, y);
+        x -= ctx.measureText(":").width + gap;
+        ctx.fillText(line.value, x, y);
+      }else{
+        ctx.textAlign = "left";
+        ctx.fillText(line.label + " " + line.value, pad, y);
+      }
     });
+    ctx.textAlign = "left";
   }
 
   // Draws the current video frame and reports whether the result looks like
@@ -546,7 +854,7 @@
   }
 
   async function capture(){
-    if(!video.videoWidth || !videoReady){ showToast("Camera not ready — wait a moment"); return; }
+    if(!video.videoWidth || !videoReady){ showToast(t("toastCamNotReady")); return; }
     shutterBtn.disabled = true;
 
     if(video.paused){
@@ -588,7 +896,7 @@
     }
 
     if(!ok){
-      showToast("Frame looked blank — try again");
+      showToast(t("toastFrameBlank"));
       shutterBtn.disabled = false;
       return;
     }
@@ -603,9 +911,9 @@
       alt = lastPosition.coords.altitude;
     }
 
-    var coordStr = (lat!=null) ? (lat.toFixed(6)+", "+lon.toFixed(6)+" ±"+Math.round(acc)+"m") : "NO GPS FIX";
+    var coordStr = (lat!=null) ? (lat.toFixed(6)+", "+lon.toFixed(6)+" ±"+Math.round(acc)+"m") : t("watermarkNoGps");
     var lines = [];
-    if(ref) lines.push("REF " + ref);
+    if(ref) lines.push({ label: t("watermarkRef"), value: ref });
     lines.push(coordStr);
     lines.push(tunisiaDisplay(when));
     drawWatermark(ctx, w, h, lines);
@@ -630,7 +938,7 @@
     });
     saveLog();
     renderLog();
-    showToast(lat!=null ? "Saved — GPS locked" : "Saved — no GPS fix");
+    showToast(lat!=null ? t("toastSavedGps") : t("toastSavedNoGps"));
 
     if(autoInc.checked){
       refInput.value = nextAutoRef();
@@ -647,9 +955,9 @@
   function openLightbox(e){
     lbImg.src = e.dataUrl;
     var parts = [];
-    parts.push(e.ref ? ("Ref " + e.ref) : "(no ref)");
-    parts.push(e.lat!=null ? (e.lat.toFixed(6)+", "+e.lon.toFixed(6)) : "no GPS fix");
-    if(e.ts) parts.push(e.ts);
+    parts.push(e.ref ? (t("refPrefix") + " " + ltr(e.ref)) : t("noRef"));
+    parts.push(e.lat!=null ? ltr(e.lat.toFixed(6)+", "+e.lon.toFixed(6)) : t("noGpsFix"));
+    if(e.ts) parts.push(ltr(e.ts));
     lbCaption.textContent = parts.join("  ·  ");
     lightbox.classList.add("show");
   }
@@ -666,7 +974,7 @@
   function renderLog(){
     logCount.textContent = entries.length;
     if(!entries.length){
-      logEl.innerHTML = '<div class="log-empty">No photos captured yet.</div>';
+      logEl.innerHTML = '<div class="log-empty" id="logEmptyMsg">' + t("logEmpty") + '</div>';
       return;
     }
     logEl.innerHTML = "";
@@ -684,10 +992,10 @@
       var refDiv = document.createElement("div");
       refDiv.className = "log-ref";
       var timePart = e.ts ? e.ts.split(" ")[1] : "";
-      refDiv.textContent = (e.ref ? ("Ref " + e.ref) : "(no ref)") + (timePart ? ("  ·  " + timePart) : "");
+      refDiv.textContent = (e.ref ? (t("refPrefix") + " " + ltr(e.ref)) : t("noRef")) + (timePart ? ("  ·  " + ltr(timePart)) : "");
       var coordDiv = document.createElement("div");
       coordDiv.className = "log-coords";
-      coordDiv.textContent = e.lat!=null ? (e.lat.toFixed(5)+", "+e.lon.toFixed(5)) : "no GPS fix";
+      coordDiv.textContent = e.lat!=null ? ltr(e.lat.toFixed(5)+", "+e.lon.toFixed(5)) : t("noGpsFix");
       meta.appendChild(refDiv); meta.appendChild(coordDiv);
       row.appendChild(meta);
 
@@ -695,7 +1003,7 @@
       actions.className = "log-actions";
 
       var view = document.createElement("button");
-      view.className = "icon-btn"; view.title = "View photo";
+      view.className = "icon-btn"; view.title = t("viewTitle");
       view.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
       view.onclick = function(){ openLightbox(e); };
       actions.appendChild(view);
@@ -706,11 +1014,11 @@
       actions.appendChild(dl);
 
       var del = document.createElement("button");
-      del.className = "icon-btn"; del.title = "Delete";
+      del.className = "icon-btn"; del.title = t("deleteTitle");
       del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2m-1 0v14a1 1 0 01-1 1H9a1 1 0 01-1-1V6"/></svg>';
       del.onclick = function(){
-        var label = e.ref ? ("photo Ref " + e.ref) : "this photo";
-        if(!confirm("Delete " + label + "? This can't be undone.")) return;
+        var label = e.ref ? t("photoRef")(ltr(e.ref)) : t("thisPhoto");
+        if(!confirm(t("deleteConfirmPhoto")(label))) return;
         entries = entries.filter(function(x){ return x.id !== e.id; });
         saveLog(); renderLog();
       };
@@ -728,7 +1036,7 @@
   }
 
   function exportCsv(){
-    if(!entries.length){ showToast("Nothing to export"); return; }
+    if(!entries.length){ showToast(t("toastNothingExport")); return; }
     var rows = [["reference","latitude","longitude","accuracy_m","altitude_m","timestamp_utc","filename"]];
     entries.slice().reverse().forEach(function(e){
       rows.push([e.ref, e.lat!=null?e.lat:"", e.lon!=null?e.lon:"", e.acc!=null?Math.round(e.acc):"",
@@ -744,17 +1052,17 @@
   }
 
   function downloadAll(){
-    if(!entries.length){ showToast("Nothing to save"); return; }
+    if(!entries.length){ showToast(t("toastNothingSave")); return; }
     // Mobile browsers block multiple automatic downloads triggered one after
     // another — only the first would go through. Bundling into a single ZIP
     // sidesteps that entirely, since it's just one download.
     if(typeof JSZip === "undefined"){
-      showToast("Zip library failed to load — reload the app");
+      showToast(t("toastZipLibFail"));
       return;
     }
     var btn = document.getElementById("downloadAllBtn");
     var originalText = btn.textContent;
-    btn.textContent = "Zipping " + entries.length + " photo(s)…";
+    btn.textContent = t("toastZipping")(entries.length);
     btn.disabled = true;
 
     var zip = new JSZip();
@@ -770,9 +1078,9 @@
       a.download = "fieldmarker_photos_" + tunisiaFileStamp(new Date()) + ".zip";
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
-      showToast("Saved " + entries.length + " photo(s) as a zip");
+      showToast(t("toastZipSaved")(entries.length));
     }).catch(function(){
-      showToast("Zip failed — try again");
+      showToast(t("toastZipFailed"));
     }).finally(function(){
       btn.textContent = originalText;
       btn.disabled = false;
@@ -781,7 +1089,7 @@
 
   function clearLog(){
     if(!entries.length) return;
-    if(confirm("Delete all " + entries.length + " logged photos? This can't be undone.")){
+    if(confirm(t("deleteConfirmAll")(entries.length))){
       entries = [];
       renderLog();
       // Fully remove the stored record rather than overwriting it with an
