@@ -240,22 +240,111 @@
   setInterval(tickClock, 1000); tickClock();
 
   // ---------- persistence ----------
+  // Photos are stored as full base64 JPEGs, which are large (often
+  // 300KB-1MB+ each as text). localStorage cheats by only offering ~5-10MB
+  // per site total — that's roughly 5-15 photos before writes start
+  // silently failing, which is why the log looked like it was wiped after
+  // closing the app (new captures simply weren't being saved anymore even
+  // though old ones were still there, or on some browsers the failed write
+  // corrupted the stored value). IndexedDB has no such small cap (typically
+  // hundreds of MB to GB, tied to actual free disk space), so entries are
+  // now stored there instead. Falls back to localStorage on very old
+  // browsers, and migrates any existing localStorage log the first time.
+  var DB_NAME = "fieldmarker_idb";
+  var DB_STORE = "store";
+  var hasIDB = "indexedDB" in window;
+
+  function openDB(){
+    return new Promise(function(resolve, reject){
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function(ev){
+        var d = ev.target.result;
+        if(!d.objectStoreNames.contains(DB_STORE)) d.createObjectStore(DB_STORE);
+      };
+      req.onsuccess = function(){ resolve(req.result); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+  function idbGet(key){
+    return openDB().then(function(d){
+      return new Promise(function(resolve, reject){
+        var tx = d.transaction(DB_STORE, "readonly");
+        var r = tx.objectStore(DB_STORE).get(key);
+        r.onsuccess = function(){ resolve(r.result); };
+        r.onerror = function(){ reject(r.error); };
+      });
+    });
+  }
+  function idbSet(key, value){
+    return openDB().then(function(d){
+      return new Promise(function(resolve, reject){
+        var tx = d.transaction(DB_STORE, "readwrite");
+        tx.objectStore(DB_STORE).put(value, key);
+        tx.oncomplete = function(){ resolve(); };
+        tx.onerror = function(){ reject(tx.error); };
+      });
+    });
+  }
+
   function loadLog(){
-    try{
-      var raw = localStorage.getItem(STORE_KEY);
-      entries = raw ? JSON.parse(raw) : [];
-    }catch(e){ entries = []; }
-    renderLog();
+    if(!hasIDB){
+      try{
+        var raw = localStorage.getItem(STORE_KEY);
+        entries = raw ? JSON.parse(raw) : [];
+      }catch(e){ entries = []; }
+      renderLog();
+      return;
+    }
+    idbGet(STORE_KEY).then(function(val){
+      if(val && val.length){
+        entries = val;
+        renderLog();
+        return;
+      }
+      // Nothing in IndexedDB yet — check for an old localStorage log from
+      // a previous version of the app and migrate it in, once.
+      var migrated = [];
+      try{
+        var raw = localStorage.getItem(STORE_KEY);
+        migrated = raw ? JSON.parse(raw) : [];
+      }catch(e){ migrated = []; }
+      entries = migrated;
+      renderLog();
+      if(migrated.length) saveLog();
+    }).catch(function(){
+      entries = [];
+      renderLog();
+      showToast("Couldn't open storage — photos won't be saved this session");
+    });
   }
   function saveLog(){
-    try{ localStorage.setItem(STORE_KEY, JSON.stringify(entries)); }
-    catch(e){ showToast("Storage full — export & clear log"); }
+    if(!hasIDB){
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(entries)); }
+      catch(e){ showToast("Storage full — export & clear log"); }
+      return;
+    }
+    idbSet(STORE_KEY, entries).catch(function(){
+      showToast("Couldn't save — export your photos soon");
+    });
   }
 
   // ---------- camera ----------
   var imageCapture = null;
   var stallTimer = null;
   var lastVideoTime = -1;
+  var staleTicks = 0;
+
+  function hardRestartVideo(){
+    if(!stream) return;
+    try{
+      var s = stream;
+      video.pause();
+      video.srcObject = null;
+      void video.offsetHeight; // force reflow so the detach actually takes
+      video.srcObject = s;
+      video.play().catch(function(){});
+    }catch(e){}
+  }
 
   async function startCamera(){
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
@@ -301,20 +390,39 @@
       if(video.readyState >= 2) markVideoReady();
 
       vfStatus.textContent = "live";
+      staleTicks = 0;
 
       // Watchdog: some mobile browsers attach the stream and report it as
       // "ready" but the decode loop never actually starts until something
-      // nudges it (a tap, a re-play() call) — this is what causes the
-      // preview to look frozen until after the first photo is taken. Poll
-      // for actual frame advancement and re-kick play() if it's stalled.
+      // nudges it — this is what causes the preview to look frozen on
+      // first open. A plain re-play() call is often not enough on its own
+      // (play() on an element that isn't technically "paused" is a no-op),
+      // so after a couple of stale checks in a row this does a hard
+      // restart: detach the stream from the video element and reattach it,
+      // which forces the browser to restart the decode pipeline.
       clearInterval(stallTimer);
       stallTimer = setInterval(function(){
         if(!stream) return;
         if(video.readyState >= 2 && video.currentTime === lastVideoTime){
-          video.play().catch(function(){});
+          staleTicks++;
+          if(staleTicks >= 2){
+            hardRestartVideo();
+            staleTicks = 0;
+          }else{
+            video.play().catch(function(){});
+          }
+        }else{
+          staleTicks = 0;
         }
         lastVideoTime = video.currentTime;
-      }, 600);
+      }, 500);
+
+      // Some browsers only need the reattach once, right after the stream
+      // is granted, before the watchdog above even gets a chance to run —
+      // this catches that case immediately instead of waiting a full second.
+      setTimeout(function(){
+        if(stream && video.currentTime === 0){ hardRestartVideo(); }
+      }, 400);
 
     }catch(err){
       vfStatus.textContent = "camera blocked";
@@ -330,16 +438,18 @@
     shutterBtn.disabled = false;
   }
 
-  // Extra safety net: the very first tap/touch anywhere on the page also
-  // nudges playback, covering browsers that gate the actual video decode
-  // loop behind a user gesture even when muted+autoplay is set.
-  function firstTouchNudge(){
-    if(stream && video.paused){ video.play().catch(function(){}); }
-    document.removeEventListener("touchstart", firstTouchNudge);
-    document.removeEventListener("pointerdown", firstTouchNudge);
+  // Safety net: any tap/touch anywhere on the page nudges the camera back
+  // to life. Kept permanent (not just a first-tap fallback) since a stall
+  // can in principle recur later (e.g. after the app is backgrounded and
+  // resumed), and this is the cheapest possible recovery path.
+  function touchNudge(){
+    if(!stream) return;
+    if(video.paused || video.currentTime === lastVideoTime){
+      hardRestartVideo();
+    }
   }
-  document.addEventListener("touchstart", firstTouchNudge, { passive: true });
-  document.addEventListener("pointerdown", firstTouchNudge);
+  document.addEventListener("touchstart", touchNudge, { passive: true });
+  document.addEventListener("pointerdown", touchNudge);
 
   // Resume the camera feed if the page was backgrounded (common on mobile —
   // browsers pause the video element and it can come back showing a stale
@@ -651,6 +761,8 @@
       del.className = "icon-btn"; del.title = "Delete";
       del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2m-1 0v14a1 1 0 01-1 1H9a1 1 0 01-1-1V6"/></svg>';
       del.onclick = function(){
+        var label = e.ref ? ("photo Ref " + e.ref) : "this photo";
+        if(!confirm("Delete " + label + "? This can't be undone.")) return;
         entries = entries.filter(function(x){ return x.id !== e.id; });
         saveLog(); renderLog();
       };
