@@ -84,7 +84,7 @@
   .log-item:last-child{border-bottom:none;}
   .log-thumb{width:38px;height:38px;border-radius:5px;object-fit:cover;flex-shrink:0;background:#000;}
   .log-meta{flex:1;min-width:0;}
-  .log-ref{font-size:12px;font-weight:600;}
+  .log-ref{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .log-coords{font-family:var(--mono);font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .log-actions{display:flex;gap:4px;}
   .icon-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--dim);width:26px;height:26px;
@@ -101,6 +101,17 @@
 
   .toggle{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);}
   .toggle input{accent-color:var(--accent);}
+
+  .lightbox{position:fixed;inset:0;background:rgba(6,9,13,.94);z-index:70;display:none;
+    align-items:center;justify-content:center;flex-direction:column;padding:22px;}
+  .lightbox.show{display:flex;}
+  .lightbox img{max-width:100%;max-height:78vh;border-radius:8px;border:1px solid var(--line);}
+  .lightbox .lb-caption{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:12px;text-align:center;}
+  .lightbox .lb-caption b{color:var(--accent);}
+  .lightbox .lb-close{position:absolute;top:16px;right:16px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--text);width:34px;height:34px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;}
+  .lightbox .lb-close svg{width:16px;height:16px;}
 </style>
 </head>
 <body>
@@ -179,6 +190,14 @@
 
 <div class="toast" id="toast"></div>
 
+<div class="lightbox" id="lightbox">
+  <button class="lb-close" id="lbClose" title="Close">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <img id="lbImg" src="" alt="Captured photo">
+  <div class="lb-caption" id="lbCaption"></div>
+</div>
+
 <script src="piexif.js"></script>
 <script src="jszip.min.js"></script>
 <script>
@@ -234,6 +253,10 @@
   }
 
   // ---------- camera ----------
+  var imageCapture = null;
+  var stallTimer = null;
+  var lastVideoTime = -1;
+
   async function startCamera(){
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
       vfStatus.textContent = "camera API unsupported";
@@ -243,15 +266,33 @@
     }
     try{
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width:{ideal:1280}, height:{ideal:960} },
+        video: { facingMode: { ideal: "environment" }, width:{ideal:1920}, height:{ideal:1440} },
         audio: false
       });
       video.srcObject = stream;
       // Some mobile browsers (especially iOS Safari, and PWAs resuming from
       // background) need an explicit play() call — autoplay alone can leave
       // the element attached but not actually decoding frames, which is the
-      // main cause of "photo comes out solid black".
+      // main cause of "photo comes out solid black" or a frozen preview.
       try{ await video.play(); }catch(e){ /* will retry on canplay below */ }
+
+      // ImageCapture lets us pull a full-resolution still from the sensor
+      // (much sharper than the live preview stream) when the browser
+      // supports it — used for capture(), not for the preview itself.
+      try{
+        var track = stream.getVideoTracks()[0];
+        if(track && "ImageCapture" in window){
+          imageCapture = new ImageCapture(track);
+        }
+        // Ask for continuous autofocus where supported — helps sharpness
+        // when photographing text/labels up close.
+        if(track && track.getCapabilities){
+          var caps = track.getCapabilities();
+          if(caps && caps.focusMode && caps.focusMode.indexOf("continuous") !== -1){
+            track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(function(){});
+          }
+        }
+      }catch(e){ imageCapture = null; }
 
       videoReady = false;
       video.addEventListener("loadeddata", markVideoReady);
@@ -260,6 +301,21 @@
       if(video.readyState >= 2) markVideoReady();
 
       vfStatus.textContent = "live";
+
+      // Watchdog: some mobile browsers attach the stream and report it as
+      // "ready" but the decode loop never actually starts until something
+      // nudges it (a tap, a re-play() call) — this is what causes the
+      // preview to look frozen until after the first photo is taken. Poll
+      // for actual frame advancement and re-kick play() if it's stalled.
+      clearInterval(stallTimer);
+      stallTimer = setInterval(function(){
+        if(!stream) return;
+        if(video.readyState >= 2 && video.currentTime === lastVideoTime){
+          video.play().catch(function(){});
+        }
+        lastVideoTime = video.currentTime;
+      }, 600);
+
     }catch(err){
       vfStatus.textContent = "camera blocked";
       vfOff.style.display = "flex";
@@ -273,6 +329,17 @@
     videoReady = true;
     shutterBtn.disabled = false;
   }
+
+  // Extra safety net: the very first tap/touch anywhere on the page also
+  // nudges playback, covering browsers that gate the actual video decode
+  // loop behind a user gesture even when muted+autoplay is set.
+  function firstTouchNudge(){
+    if(stream && video.paused){ video.play().catch(function(){}); }
+    document.removeEventListener("touchstart", firstTouchNudge);
+    document.removeEventListener("pointerdown", firstTouchNudge);
+  }
+  document.addEventListener("touchstart", firstTouchNudge, { passive: true });
+  document.addEventListener("pointerdown", firstTouchNudge);
 
   // Resume the camera feed if the page was backgrounded (common on mobile —
   // browsers pause the video element and it can come back showing a stale
@@ -428,19 +495,40 @@
       try{ await video.play(); }catch(e){}
     }
 
-    var w = video.videoWidth, h = video.videoHeight;
-    canvas.width = w; canvas.height = h;
-    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    var w, h, ctx, ok = false;
 
-    var ok = drawFrameAndCheck(ctx, w, h);
-    if(!ok){
-      // Retry a couple of times with short waits — covers the case where the
-      // decoder hadn't produced a real frame yet on the first attempt.
-      for(var attempt = 0; attempt < 3 && !ok; attempt++){
-        await new Promise(function(r){ setTimeout(r, 200); });
-        ok = drawFrameAndCheck(ctx, w, h);
+    // Prefer a full-resolution still straight from the sensor — the live
+    // preview stream is capped much lower than the camera's actual photo
+    // resolution, which is the main reason fine text looked soft.
+    var highResBitmap = null;
+    if(imageCapture){
+      try{
+        var blob = await imageCapture.takePhoto();
+        highResBitmap = await createImageBitmap(blob);
+      }catch(e){ highResBitmap = null; }
+    }
+
+    if(highResBitmap){
+      w = highResBitmap.width; h = highResBitmap.height;
+      canvas.width = w; canvas.height = h;
+      ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(highResBitmap, 0, 0, w, h);
+      ok = true;
+    }else{
+      w = video.videoWidth; h = video.videoHeight;
+      canvas.width = w; canvas.height = h;
+      ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ok = drawFrameAndCheck(ctx, w, h);
+      if(!ok){
+        // Retry a couple of times with short waits — covers the case where
+        // the decoder hadn't produced a real frame yet on the first attempt.
+        for(var attempt = 0; attempt < 3 && !ok; attempt++){
+          await new Promise(function(r){ setTimeout(r, 200); });
+          ok = drawFrameAndCheck(ctx, w, h);
+        }
       }
     }
+
     if(!ok){
       showToast("Frame looked blank — try again");
       shutterBtn.disabled = false;
@@ -464,7 +552,7 @@
     lines.push(tunisiaDisplay(when));
     drawWatermark(ctx, w, h, lines);
 
-    var dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    var dataUrl = canvas.toDataURL("image/jpeg", 0.96);
 
     if(lat != null){
       try{
@@ -493,6 +581,29 @@
     setTimeout(function(){ shutterBtn.disabled = false; }, 350);
   }
 
+  // ---------- lightbox ----------
+  var lightbox = document.getElementById("lightbox");
+  var lbImg = document.getElementById("lbImg");
+  var lbCaption = document.getElementById("lbCaption");
+
+  function openLightbox(e){
+    lbImg.src = e.dataUrl;
+    var parts = [];
+    parts.push(e.ref ? ("Ref " + e.ref) : "(no ref)");
+    parts.push(e.lat!=null ? (e.lat.toFixed(6)+", "+e.lon.toFixed(6)) : "no GPS fix");
+    if(e.ts) parts.push(e.ts);
+    lbCaption.textContent = parts.join("  ·  ");
+    lightbox.classList.add("show");
+  }
+  function closeLightbox(){
+    lightbox.classList.remove("show");
+    lbImg.src = "";
+  }
+  document.getElementById("lbClose").addEventListener("click", closeLightbox);
+  lightbox.addEventListener("click", function(ev){
+    if(ev.target === lightbox) closeLightbox();
+  });
+
   // ---------- log rendering ----------
   function renderLog(){
     logCount.textContent = entries.length;
@@ -514,7 +625,8 @@
       meta.className = "log-meta";
       var refDiv = document.createElement("div");
       refDiv.className = "log-ref";
-      refDiv.textContent = e.ref ? ("Ref " + e.ref) : "(no ref)";
+      var timePart = e.ts ? e.ts.split(" ")[1] : "";
+      refDiv.textContent = (e.ref ? ("Ref " + e.ref) : "(no ref)") + (timePart ? ("  ·  " + timePart) : "");
       var coordDiv = document.createElement("div");
       coordDiv.className = "log-coords";
       coordDiv.textContent = e.lat!=null ? (e.lat.toFixed(5)+", "+e.lon.toFixed(5)) : "no GPS fix";
@@ -523,6 +635,12 @@
 
       var actions = document.createElement("div");
       actions.className = "log-actions";
+
+      var view = document.createElement("button");
+      view.className = "icon-btn"; view.title = "View photo";
+      view.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+      view.onclick = function(){ openLightbox(e); };
+      actions.appendChild(view);
 
       var dl = document.createElement("a");
       dl.className = "icon-btn"; dl.href = e.dataUrl; dl.download = e.filename;
