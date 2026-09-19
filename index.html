@@ -39,6 +39,10 @@
      page text direction — isolate them as their own LTR run */
   .ltr-num{direction:ltr;unicode-bidi:isolate;}
 
+  .ver-badge{font-family:var(--mono);font-size:9px;color:var(--accent);
+    background:rgba(95,227,161,.10);border:1px solid var(--accent-dim);
+    padding:2px 5px;border-radius:5px;letter-spacing:.03em;}
+
   /* ---- tap-to-copy values (coordinates, reference numbers) ---- */
   .copyable{cursor:pointer;border-bottom:1px dashed var(--accent-dim);
     padding-bottom:1px;transition:color .15s, border-color .15s;
@@ -162,6 +166,7 @@
   <header>
     <h1 id="appTitle">Field Marker</h1>
     <div class="header-right">
+      <span class="ver-badge ltr-num" id="verBadge">v12</span>
       <span class="badge ltr-num" id="clock">--:--:--</span>
       <div class="lang-switch" id="langSwitch">
         <button class="lang-current" id="langCurrentBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
@@ -1269,7 +1274,32 @@
 
   if("serviceWorker" in navigator){
     window.addEventListener("load", function(){
-      navigator.serviceWorker.register("sw.js").catch(function(){});
+      navigator.serviceWorker.register("sw.js").then(function(reg){
+        // Always check for a newer version on launch.
+        reg.update().catch(function(){});
+
+        // If an updated worker is found, tell it to take over immediately
+        // instead of waiting for every tab to be closed first.
+        reg.addEventListener("updatefound", function(){
+          var nw = reg.installing;
+          if(!nw) return;
+          nw.addEventListener("statechange", function(){
+            if(nw.state === "installed" && navigator.serviceWorker.controller){
+              nw.postMessage({ type: "SKIP_WAITING" });
+            }
+          });
+        });
+      }).catch(function(){});
+
+      // When the new worker takes control, reload once so the page being
+      // shown is actually the new version — this is what makes an update
+      // land without the "close and reopen twice" dance.
+      var reloaded = false;
+      navigator.serviceWorker.addEventListener("controllerchange", function(){
+        if(reloaded) return;
+        reloaded = true;
+        window.location.reload();
+      });
     });
   }
 })();
