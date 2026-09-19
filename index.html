@@ -39,6 +39,19 @@
      page text direction — isolate them as their own LTR run */
   .ltr-num{direction:ltr;unicode-bidi:isolate;}
 
+  /* ---- tap-to-copy values (coordinates, reference numbers) ---- */
+  .copyable{cursor:pointer;border-bottom:1px dashed var(--accent-dim);
+    padding-bottom:1px;transition:color .15s, border-color .15s;
+    -webkit-user-select:none;user-select:none;}
+  .copyable:active{color:var(--accent);border-bottom-color:var(--accent);}
+  .copyable.copied{color:var(--accent);border-bottom-color:var(--accent);}
+  .copy-hint{font-size:9px;color:var(--dim);opacity:.75;margin-top:3px;}
+  .lb-copy-row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:10px;}
+  .lb-copy-btn{background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    font-size:11px;padding:7px 11px;border-radius:7px;display:flex;align-items:center;gap:5px;}
+  .lb-copy-btn:active{border-color:var(--accent);color:var(--accent);}
+  .lb-copy-btn svg{width:12px;height:12px;}
+
   /* ---- language switcher: closed pill + drop-down list, tap to pick ---- */
   .lang-switch{position:relative;}
   .lang-current{display:flex;align-items:center;gap:3px;background:var(--panel-2);
@@ -218,6 +231,7 @@
         <button class="btn-ghost" id="clearBtn">Clear</button>
       </div>
     </div>
+    <div class="copy-hint" id="copyHint" style="margin-bottom:6px;">Tap any underlined value to copy it</div>
     <div class="log" id="log">
       <div class="log-empty" id="logEmptyMsg">No photos captured yet.</div>
     </div>
@@ -237,6 +251,7 @@
   </button>
   <img id="lbImg" src="" alt="Captured photo">
   <div class="lb-caption" id="lbCaption"></div>
+  <div class="lb-copy-row" id="lbCopyRow"></div>
 </div>
 
 <script src="piexif.js"></script>
@@ -327,7 +342,16 @@
       viewTitle: "View photo",
       deleteTitle: "Delete",
       watermarkRef: "REF",
-      watermarkNoGps: "NO GPS FIX"
+      watermarkNoGps: "NO GPS FIX",
+      copyTitle: "Tap to copy",
+      copyHint: "Tap any underlined value to copy it",
+      copiedCoords: "Coordinates copied",
+      copiedRef: "Reference copied",
+      copiedAll: "Copied",
+      copyFailed: "Couldn't copy — try again",
+      lbCopyCoords: "Copy coordinates",
+      lbCopyRef: "Copy reference",
+      lbCopyBoth: "Copy ref + coordinates"
     },
     ar: {
       appTitle: "علامة الحقل",
@@ -381,7 +405,16 @@
       viewTitle: "عرض الصورة",
       deleteTitle: "حذف",
       watermarkRef: "مرجع",
-      watermarkNoGps: "بدون GPS"
+      watermarkNoGps: "بدون GPS",
+      copyTitle: "اضغط للنسخ",
+      copyHint: "اضغط على أي قيمة تحتها خط لنسخها",
+      copiedCoords: "تم نسخ الإحداثيات",
+      copiedRef: "تم نسخ المرجع",
+      copiedAll: "تم النسخ",
+      copyFailed: "تعذّر النسخ — حاول مرة أخرى",
+      lbCopyCoords: "نسخ الإحداثيات",
+      lbCopyRef: "نسخ المرجع",
+      lbCopyBoth: "نسخ المرجع والإحداثيات"
     }
   };
   var LANG = "en";
@@ -421,7 +454,17 @@
     }
   }
 
+  // Copying the live readout gives plain "lat, lon" — the ±accuracy shown
+  // on screen is deliberately left off the clipboard.
+  gpsText.addEventListener("click", function(){
+    if(gpsState.kind !== "ok") return;
+    copyValue(gpsState.lat.toFixed(6) + ", " + gpsState.lon.toFixed(6),
+      t("copiedCoords"), gpsText);
+  });
+
   function renderGpsUI(){
+    gpsText.classList.remove("copyable");
+    gpsText.removeAttribute("title");
     if(gpsState.kind === "wait"){
       gpsDot.className = "dot wait"; gpsText.textContent = t("gpsAcquiring");
     }else if(gpsState.kind === "https"){
@@ -431,6 +474,8 @@
     }else if(gpsState.kind === "ok"){
       gpsDot.className = "dot ok";
       gpsText.textContent = gpsState.lat.toFixed(6) + ", " + gpsState.lon.toFixed(6) + "  ±" + Math.round(gpsState.acc) + "m";
+      gpsText.classList.add("copyable");
+      gpsText.title = t("copyTitle");
     }else if(gpsState.kind === "denied"){
       gpsDot.className = "dot bad"; gpsText.textContent = t("gpsDenied");
     }else if(gpsState.kind === "unavailable"){
@@ -453,6 +498,7 @@
     var emptyMsg = document.getElementById("logEmptyMsg");
     if(emptyMsg) emptyMsg.textContent = t("logEmpty");
     document.getElementById("downloadAllBtn").textContent = t("downloadAllBtn");
+    document.getElementById("copyHint").textContent = t("copyHint");
     shutterBtn.title = t("shutterTitle");
     document.getElementById("lbClose").title = t("lbCloseTitle");
     document.documentElement.lang = LANG;
@@ -508,6 +554,58 @@
     toast.classList.add("show");
     clearTimeout(showToast._t);
     showToast._t = setTimeout(function(){ toast.classList.remove("show"); }, 1800);
+  }
+
+  // ---------- tap-to-copy ----------
+  // Always copies raw values (never an element's textContent), so the
+  // invisible LTR-isolate characters used for Arabic layout never end up
+  // on the clipboard.
+  function writeToClipboard(text){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text);
+    }
+    // Fallback for older mobile WebViews without the async clipboard API.
+    return new Promise(function(resolve, reject){
+      try{
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        ok ? resolve() : reject();
+      }catch(err){ reject(err); }
+    });
+  }
+
+  function copyValue(text, toastMsg, el){
+    writeToClipboard(text).then(function(){
+      showToast(toastMsg + ": " + text);
+      if(el){
+        el.classList.add("copied");
+        setTimeout(function(){ el.classList.remove("copied"); }, 700);
+      }
+      if(navigator.vibrate){ try{ navigator.vibrate(18); }catch(e){} }
+    }).catch(function(){
+      showToast(t("copyFailed"));
+    });
+  }
+
+  // Marks an element as tap-to-copy: dashed underline + copies `getText()`.
+  function makeCopyable(el, getText, toastMsg){
+    el.classList.add("copyable");
+    el.title = t("copyTitle");
+    el.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      var val = getText();
+      if(!val) return;
+      copyValue(val, toastMsg, el);
+    });
   }
 
   function tickClock(){
@@ -952,6 +1050,22 @@
   var lbImg = document.getElementById("lbImg");
   var lbCaption = document.getElementById("lbCaption");
 
+  var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+    '<rect x="9" y="9" width="12" height="12" rx="2"/>' +
+    '<path d="M5 15H4a1 1 0 01-1-1V4a1 1 0 011-1h10a1 1 0 011 1v1"/></svg>';
+
+  function addLbCopyBtn(row, label, getText, toastMsg){
+    var b = document.createElement("button");
+    b.className = "lb-copy-btn";
+    b.innerHTML = COPY_ICON + "<span></span>";
+    b.querySelector("span").textContent = label;
+    b.onclick = function(ev){
+      ev.stopPropagation();
+      copyValue(getText(), toastMsg, b);
+    };
+    row.appendChild(b);
+  }
+
   function openLightbox(e){
     lbImg.src = e.dataUrl;
     var parts = [];
@@ -959,6 +1073,24 @@
     parts.push(e.lat!=null ? ltr(e.lat.toFixed(6)+", "+e.lon.toFixed(6)) : t("noGpsFix"));
     if(e.ts) parts.push(ltr(e.ts));
     lbCaption.textContent = parts.join("  ·  ");
+
+    // Rebuild the copy buttons for whichever values this photo actually has.
+    var row = document.getElementById("lbCopyRow");
+    row.innerHTML = "";
+    if(e.lat != null){
+      addLbCopyBtn(row, t("lbCopyCoords"), function(){
+        return e.lat.toFixed(6) + ", " + e.lon.toFixed(6);
+      }, t("copiedCoords"));
+    }
+    if(e.ref){
+      addLbCopyBtn(row, t("lbCopyRef"), function(){ return e.ref; }, t("copiedRef"));
+    }
+    if(e.ref && e.lat != null){
+      addLbCopyBtn(row, t("lbCopyBoth"), function(){
+        return e.ref + "\t" + e.lat.toFixed(6) + ", " + e.lon.toFixed(6);
+      }, t("copiedAll"));
+    }
+
     lightbox.classList.add("show");
   }
   function closeLightbox(){
@@ -992,10 +1124,31 @@
       var refDiv = document.createElement("div");
       refDiv.className = "log-ref";
       var timePart = e.ts ? e.ts.split(" ")[1] : "";
-      refDiv.textContent = (e.ref ? (t("refPrefix") + " " + ltr(e.ref)) : t("noRef")) + (timePart ? ("  ·  " + ltr(timePart)) : "");
+      if(e.ref){
+        // Only the reference itself is tappable — the timestamp beside it
+        // stays plain so the tap target is unambiguous.
+        var refSpan = document.createElement("span");
+        refSpan.textContent = t("refPrefix") + " " + ltr(e.ref);
+        makeCopyable(refSpan, function(){ return e.ref; }, t("copiedRef"));
+        refDiv.appendChild(refSpan);
+        if(timePart) refDiv.appendChild(document.createTextNode("  ·  " + ltr(timePart)));
+      }else{
+        refDiv.textContent = t("noRef") + (timePart ? ("  ·  " + ltr(timePart)) : "");
+      }
+
       var coordDiv = document.createElement("div");
       coordDiv.className = "log-coords";
-      coordDiv.textContent = e.lat!=null ? ltr(e.lat.toFixed(5)+", "+e.lon.toFixed(5)) : t("noGpsFix");
+      if(e.lat != null){
+        var coordSpan = document.createElement("span");
+        coordSpan.textContent = ltr(e.lat.toFixed(5)+", "+e.lon.toFixed(5));
+        // Copies full 6-decimal precision even though 5 are displayed.
+        makeCopyable(coordSpan, function(){
+          return e.lat.toFixed(6) + ", " + e.lon.toFixed(6);
+        }, t("copiedCoords"));
+        coordDiv.appendChild(coordSpan);
+      }else{
+        coordDiv.textContent = t("noGpsFix");
+      }
       meta.appendChild(refDiv); meta.appendChild(coordDiv);
       row.appendChild(meta);
 
